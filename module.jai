@@ -46,8 +46,9 @@ message :: (metaprogram_plugin: *Metaprogram_Plugin, message: *Message) {
                         if resolved_call_expression && resolved_call_expression.kind == .PROCEDURE_HEADER {
                             subexpression_header := cast(*Code_Procedure_Header) resolved_call_expression;
 
-                            if !check_valid_procedure_call(plugin, subexpression_header, subexpression_call) {
-                                compiler_report(plugin, "Found invalid call to assert. You cannot have function calls directly in your assert parameters.", subexpression_call.location, .ERROR);
+                            invalid_name: string;
+                            if !check_valid_procedure_call(plugin, subexpression_header, subexpression_call, *invalid_name) {
+                                compiler_report(plugin, tprint("Found invalid call to assert. You cannot have function calls directly in your assert parameters. %", invalid_name), subexpression_call.location, .ERROR);
                             }
 
                             continue;
@@ -85,18 +86,18 @@ AssertDiscardPlugin :: struct {
     
 }
 
-check_valid_procedure_call :: (plugin: *AssertDiscardPlugin, header: *Code_Procedure_Header, call: *Code_Procedure_Call) -> bool {
+check_valid_procedure_call :: (plugin: *AssertDiscardPlugin, header: *Code_Procedure_Header, call: *Code_Procedure_Call, name: *string) -> bool {
     if header.name == "assert" {
-        return !caller_contains_function(plugin, call);
+        return !caller_contains_function(plugin, call, name);
     }
     
     return true;
 }
 
-caller_contains_function :: (plugin: *AssertDiscardPlugin, procedure_call: *Code_Procedure_Call) -> bool {
+caller_contains_function :: (plugin: *AssertDiscardPlugin, procedure_call: *Code_Procedure_Call, name: *string) -> bool {
     #import "Compiler";
 
-    contains_procedure_call :: (plugin: *AssertDiscardPlugin, node: *Code_Node) -> bool {
+    contains_procedure_call :: (plugin: *AssertDiscardPlugin, node: *Code_Node, name: *string) -> bool {
         if !node {
             return false;
         }
@@ -104,8 +105,10 @@ caller_contains_function :: (plugin: *AssertDiscardPlugin, procedure_call: *Code
         if node.kind == .PROCEDURE_CALL {
             procedure_call := cast(*Code_Procedure_Call) node;
             resolved_expression := procedure_call.resolved_procedure_expression;
+            procedure_name: string;
             if resolved_expression && resolved_expression.kind == .PROCEDURE_HEADER {
                 procedure_header := cast(*Code_Procedure_Header) resolved_expression;
+                procedure_name = procedure_header.name;
                 if array_find(plugin.valid_function_names, procedure_header.name) {
                     return false;
                 }
@@ -113,25 +116,26 @@ caller_contains_function :: (plugin: *AssertDiscardPlugin, procedure_call: *Code
                 table_set(*plugin.found_invalid_function_names, procedure_header.name, true);
             }
 
+            name.* = procedure_name;
             return true;
         } else if node.kind == .BINARY_OPERATOR {
             binary_operator := cast(*Code_Binary_Operator) node;
-            return contains_procedure_call(plugin, binary_operator.left) || contains_procedure_call(plugin, binary_operator.right);
+            return contains_procedure_call(plugin, binary_operator.left, name) || contains_procedure_call(plugin, binary_operator.right, name);
         } else if node.kind == .UNARY_OPERATOR {
             unary_operator := cast(*Code_Unary_Operator) node;
-            return contains_procedure_call(plugin, unary_operator.subexpression);
+            return contains_procedure_call(plugin, unary_operator.subexpression, name);
         } else if node.kind == .IDENT {
             ident := cast(*Code_Ident) node;
-            return contains_procedure_call(plugin, ident.resolved_declaration);
+            return contains_procedure_call(plugin, ident.resolved_declaration, name);
         } else if node.kind == .CAST {
             cast_node := cast(*Code_Cast) node;
-            return contains_procedure_call(plugin, cast_node.expression);
+            return contains_procedure_call(plugin, cast_node.expression, name);
         } else if node.kind == .LITERAL {
             return false;
         } else if node.kind == .DECLARATION {
             // declaration basically means it was defined outside the function call
             return false;
-        } else if node.kind == .SIZE_OR_TYPE_INFO {
+        } else if node.kind == .TYPE_QUERY {
             return false;
         } else if node.kind == .DIRECTIVE_RUN {
             return false;
@@ -143,7 +147,7 @@ caller_contains_function :: (plugin: *AssertDiscardPlugin, procedure_call: *Code
 
     arguments_unsorted := procedure_call.arguments_unsorted;
 
-    return contains_procedure_call(plugin, arguments_unsorted[0].expression);
+    return contains_procedure_call(plugin, arguments_unsorted[0].expression, name);
 }
 
 compiler_report :: (plugin: *AssertDiscardPlugin, error_text: string, location: Code_Node.Location, mode := Report.ERROR) {
